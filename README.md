@@ -1,11 +1,26 @@
-# vpn-rules-sync for MikroTik RouterOS v7
+# vpn-rules-import for MikroTik RouterOS v7
 
 Скрипт синхронизирует правила из JSON-источников (MetaCubeX `meta-rules-dat`) в MikroTik:
 
 - `/ip firewall address-list` и `/ipv6 firewall address-list` (list `to-vpn`)
 - `/ip dns static` (`type=FWD`, `forward-to=8.8.8.8`)
 
-Основной файл в репозитории сейчас: `vpn-rules-import.rsc` (внутри имя скрипта и логов: `vpn-rules-sync`).
+Основной файл в репозитории сейчас: `vpn-rules-import.rsc` (внутри имя скрипта и логов: `vpn-rules-import`).
+
+## 🚀 Быстрая установка (одна команда)
+
+Выполните в терминале MikroTik:
+
+```
+/tool/fetch url="https://raw.githubusercontent.com/SimyriK/mikrotik-vpn-rules-import/main/vpn-rules-installer.rsc" dst-path="vpn-rules-installer.rsc"; /import file-name="vpn-rules-installer.rsc"
+```
+
+Или если предпочитаете сохранить как скрипт для повторного использования:
+
+```
+/system/script/add name=vpn-rules-installer policy=read,write,test,policy,ftp source=([/tool/fetch url="https://raw.githubusercontent.com/SimyriK/mikrotik-vpn-rules-import/main/vpn-rules-installer.rsc" output=user as-value]->"data")
+/system/script/run vpn-rules-installer
+```
 
 ## Что умеет
 
@@ -22,10 +37,14 @@
 
 ## Установка в RouterOS
 
+### Вручную
+
 1. Откройте **System -> Scripts**.
-2. Создайте скрипт с именем `vpn-rules-sync`.
-3. Вставьте содержимое `vpn-rules-import.rsc`.
-4. Запустите вручную первый раз и проверьте лог.
+2. Скрипт **`vpn-rules-config`**: вставьте содержимое `vpn-rules-config.rsc` (см. комментарии в файле про имя и policies).
+3. Скрипт **`vpn-rules-import`**: вставьте содержимое `vpn-rules-import.rsc`.
+4. Запустите `vpn-rules-import` вручную и проверьте лог.
+
+Опционально: **`vpn-rules-selfupdate`** и **`vpn-rules-cron`** (содержимое `vpn-rules-cron.rsc`, то же имя на роутере) для планировщика и автообновления; см. «Самообновление с GitHub». Скрипт **`vpn-rules-cron`** должен существовать на устройстве — иначе selfupdate выдаст предупреждение и не обновит его.
 
 ## Что именно создаёт скрипт
 
@@ -78,12 +97,31 @@
 Добавление планировщика (раз в сутки):
 
 ```rsc
-/system scheduler add name=vpn-rules-sync interval=1d start-time=04:00:00 on-event="/system script run vpn-rules-sync"
+/system scheduler add name=vpn-rules-import interval=1d start-time=04:00:00 on-event="/system/script/run vpn-rules-import"
 ```
+
+## Самообновление с GitHub
+
+Отдельный скрипт **`vpn-rules-selfupdate`** (файл `vpn-rules-selfupdate.rsc`): `tool fetch` в файл на флеш, сборка тела как в основном скрипте (без лимита `output=user`), сравнение SHA-512 с текущим `source`, при отличии — `/system script set ... source=`.
+
+В начале файла:
+
+- **`vpnRulesGitBase`** — каталог raw ветки для **`vpn-rules-import.rsc`**, **`vpn-rules-cron.rsc`** и **`vpn-rules-selfupdate.rsc`** (например форк этого репозитория). **`vpn-rules-config.rsc` из основного репо не подтягивается** — на клиентах свой конфиг.
+- **`vpnRulesConfigSourceUrl`** — задаётся в **`vpn-rules-config`** (не в selfupdate: иначе при обновлении `vpn-rules-selfupdate.rsc` с GitHub сбросился бы URL). Если непусто, полный **HTTPS** raw одного файла с телом **`vpn-rules-config`**. Пустая строка — selfupdate конфиг по URL не качает.
+
+**Предпочтительный вариант для персонального конфига — [Gist](https://gist.github.com/)**: создай gist с одним файлом (например `vpn-rules-config.rsc`), открой **Raw** и скопируй URL вида `https://gist.githubusercontent.com/.../raw/.../vpn-rules-config.rsc`. Режим gist *Secret* — это **не шифрование**: ссылка не индексируется как публичная, но **любой, у кого есть URL, может скачать файл**; для RouterOS `tool fetch` без токена этого достаточно.
+
+Порядок в selfupdate: сначала **`run vpn-rules-config`** (глобалы с устройства, в т.ч. URL), затем `vpn-rules-import` → опционально `vpn-rules-config` с URL → **`vpn-rules-cron`** → **`vpn-rules-selfupdate`**.
+
+Те же policies, что у основного скрипта (`read`, `write`, `test`, `policy`, `ftp`).
+
+### Расписание
+
+В **System → Scheduler** логично повесить одно задание на скрипт **`vpn-rules-cron`**: он сначала вызывает selfupdate (скачивает актуальные `vpn-rules-import.rsc`, `vpn-rules-cron.rsc`, `vpn-rules-selfupdate.rsc` и при необходимости конфиг по URL), затем **`vpn-rules-import`**, так что правила применяются уже новой версией импорта. Интервал и время старта задай под себя.
 
 ## Конфигурация
 
-В начале скрипта:
+Глобальные параметры списков и источников — в скрипте **`vpn-rules-config`** (`vpn-rules-config.rsc`).
 
 - `dryRun` — только вывод команд
 - `forceApply` — игнорировать совпадение hash и применить заново
@@ -91,6 +129,7 @@
 - `forwardTo` — DNS forwarder для `FWD` записей
 - `stateDir` — директория для state-файлов
 - `dnsCacheMinSize` — минимальный `cache-size` DNS cache (если текущее больше, не уменьшается)
+- `vpnRulesConfigSourceUrl` — URL для raw фвйла с конфигом (см. «Самообновление с GitHub»)
 
 ### Блок `sources`
 
@@ -114,7 +153,7 @@
 
 ## Логи
 
-Префикс логов: `vpn-rules-sync:`.
+Префикс логов: `vpn-rules-import:`.
 
 Типичные сообщения:
 
@@ -144,6 +183,10 @@
 
 ## Файлы репозитория
 
-- `vpn-rules-import.rsc` — основной RouterOS-скрипт (`vpn-rules-sync`)
+- `vpn-rules-import.rsc` — основной RouterOS-скрипт (`vpn-rules-import`)
+- `vpn-rules-config.rsc` — конфиг (`vpn-rules-config` на роутере)
+- `vpn-rules-selfupdate.rsc` — самообновление скриптов с GitHub (`vpn-rules-selfupdate`)
+- `vpn-rules-cron.rsc` — обёртка для планировщика: selfupdate, затем `vpn-rules-import` (`vpn-rules-cron`)
+- `vpn-rules-installer.rsc` — интерактивная установка с GitHub (`vpn-rules-installer`)
 - `list-geosite-files.sh` — Linux-скрипт для сбора списка geosite JSON
 - `README.md` — документация

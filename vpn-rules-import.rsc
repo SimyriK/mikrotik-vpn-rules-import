@@ -1,5 +1,7 @@
-# vpn-rules-sync.rsc
+# vpn-rules-import.rsc
 # Импорт правил из JSON в MikroTik RouterOS v7
+#
+# Установка: System -> Scripts -> Add, имя vpn-rules-import, policies: read, write, test, policy, ftp.
 #
 :local ScriptVersion "v1.0"
 # Режим "только вывод": true = только :put команд в терминал, без выполнения
@@ -9,48 +11,18 @@
 :local drySuffix ""
 :if ($dryRun) do={ :set drySuffix " DRY-RUN" }
 :if ($forceApply) do={ :set drySuffix ($drySuffix . " FORCE") }
-:log info ("vpn-rules-sync: script " . $ScriptVersion . $drySuffix)
+:log info ("vpn-rules-import: script " . $ScriptVersion . $drySuffix)
 :local dryPutSuffix ""
 :if ($dryRun) do={ :set dryPutSuffix " DRY-RUN (no changes)" }
 :if ($forceApply) do={ :set dryPutSuffix ($dryPutSuffix . " FORCE") }
-:put ("vpn-rules-sync: script " . $ScriptVersion . $dryPutSuffix)
-# Константы применения
+:put ("vpn-rules-import: script " . $ScriptVersion . $dryPutSuffix)
+# Минимальный dns cache-size (если на роутере уже больше — не уменьшаем).
+:global dnsCacheMinSize "4096KiB"
 :global listName "to-vpn"
 :global forwardTo "8.8.8.8"
 :global stateDir "vpn-rules-state"
-
-# --- Конфигурация sources ---
-# Поля source:
-# id      - уникальный короткий идентификатор набора (используется в state/comment)
-# fmt     - формат источника, сейчас поддерживается: json
-# tag     - префикс комментария; итоговый comment = "<tag>-<id>"
-# enabled - "true" или "false" (строкой) для включения/выключения source
-# src     - URL источника (можно GitHub blob, будет преобразован в raw)
-# map     - список правил "<json-path>|<type>" через запятую
-#           type: ip | domain | subdomain | regex
-:local sources {
-  {
-    "id"="geosite-youtube";
-    "fmt"="json";
-    "tag"="metaRules";
-    "enabled"="true";
-    "src"="https://github.com/MetaCubeX/meta-rules-dat/blob/sing/geo/geosite/youtube.json";
-    "map"="rules.domain|domain,rules.domain_suffix|subdomain,rules.domain_regex|regex,rules.ip_cidr|ip"
-  };
-  {
-    "id"="geosite-x";
-    "fmt"="json";
-    "tag"="metaRules";
-    "enabled"="true";
-    "src"="https://github.com/MetaCubeX/meta-rules-dat/blob/sing/geo/geosite/x.json";
-    "map"="rules.domain|domain,rules.domain_suffix|subdomain,rules.domain_regex|regex,rules.ip_cidr|ip"
-  };
-}
-
-# Настройки DNS cache (использует RAM RouterOS)
-# Устанавливаем только минимальный размер cache-size:
-# если текущее значение больше или равно - ничего не меняем.
-:global dnsCacheMinSize "4096KiB"
+# Конфиг: скрипт vpn-rules-config (содержимое vpn-rules-config.rsc)
+/system/script/run vpn-rules-config;
 
 # Конвертер размера в KiB (поддержка суффиксов KiB/MiB/GiB/B)
 :global sizeToKiB do={
@@ -75,15 +47,15 @@
 :local curKiB [$sizeToKiB size=$currentDnsCacheSize]
 
 :if (($needKiB > 0) && ($curKiB >= $needKiB)) do={
-  :put ("vpn-rules-sync: dns cache-size OK (current=" . $currentDnsCacheSize . ", min=" . $dnsCacheMinSize . ")")
+  :put ("vpn-rules-import: dns cache-size OK (current=" . $currentDnsCacheSize . ", min=" . $dnsCacheMinSize . ")")
 } else={
   :if ($dryRun) do={
-    :put ("vpn-rules-sync: [DRY-RUN] would set /ip dns cache-size=" . $dnsCacheMinSize . " (current=" . $currentDnsCacheSize . ")")
+    :put ("vpn-rules-import: [DRY-RUN] would set /ip dns cache-size=" . $dnsCacheMinSize . " (current=" . $currentDnsCacheSize . ")")
   } else={
     :do {
       /ip dns set cache-size=$dnsCacheMinSize
-      :put ("vpn-rules-sync: set dns cache-size to min=" . $dnsCacheMinSize . " (was " . $currentDnsCacheSize . ")")
-    } on-error={ :log warning "vpn-rules-sync: failed to set /ip dns cache-size" }
+      :put ("vpn-rules-import: set dns cache-size to min=" . $dnsCacheMinSize . " (was " . $currentDnsCacheSize . ")")
+    } on-error={ :log warning "vpn-rules-import: failed to set /ip dns cache-size" }
   }
 }
 
@@ -352,11 +324,11 @@
   :do {
     /tool fetch url=$url mode=https check-certificate=yes-without-crl dst-path=$tmpName as-value
   } on-error={
-    :log warning "vpn-rules-sync: fetch to file failed"
+    :log warning "vpn-rules-import: fetch to file failed"
     :return ""
   }
   :local fid [/file find name~$tmpName]
-  :if ([:len $fid] = 0) do={ :log warning "vpn-rules-sync: temp file not found"; :return "" }
+  :if ([:len $fid] = 0) do={ :log warning "vpn-rules-import: temp file not found"; :return "" }
   :local fpath [/file get [:pick $fid 0] name]
   :local fileSize [/file get [:pick $fid 0] size]
   :local content ""
@@ -380,15 +352,15 @@
   :global listName
   :local c $comment
   :if ($dryRun) do={
-    :put ("vpn-rules-sync: [DRY-RUN] would remove old rules comment=" . $c)
+    :put ("vpn-rules-import: [DRY-RUN] would remove old rules comment=" . $c)
     :foreach id in=[/ip firewall address-list find list=$listName comment=$c] do={
-      :put ("vpn-rules-sync: [DRY-RUN]   /ip firewall address-list remove " . $id)
+      :put ("vpn-rules-import: [DRY-RUN]   /ip firewall address-list remove " . $id)
     }
     :foreach id in=[/ipv6 firewall address-list find list=$listName comment=$c] do={
-      :put ("vpn-rules-sync: [DRY-RUN]   /ipv6 firewall address-list remove " . $id)
+      :put ("vpn-rules-import: [DRY-RUN]   /ipv6 firewall address-list remove " . $id)
     }
     :foreach id in=[/ip dns static find comment=$c] do={
-      :put ("vpn-rules-sync: [DRY-RUN]   /ip dns static remove " . $id)
+      :put ("vpn-rules-import: [DRY-RUN]   /ip dns static remove " . $id)
     }
   } else={
     :do {
@@ -417,16 +389,22 @@
   :global normalizeRegex
   :if ($typ = "ip") do={
     :if ([:find $value ":"] >= 0) do={
-      :if ($dryRun) do={ :put ("vpn-rules-sync: [DRY-RUN] /ipv6 firewall address-list add list=" . $listName . " address=" . $value . " comment=" . $comment) } else={ /ipv6 firewall address-list add list=$listName address=$value comment=$comment }
+      :if ($dryRun) do={ :put ("vpn-rules-import: [DRY-RUN] /ipv6 firewall address-list add list=" . $listName . " address=" . $value . " comment=" . $comment) } else={ /ipv6 firewall address-list add list=$listName address=$value comment=$comment }
     } else={
-      :if ($dryRun) do={ :put ("vpn-rules-sync: [DRY-RUN] /ip firewall address-list add list=" . $listName . " address=" . $value . " comment=" . $comment) } else={ /ip firewall address-list add list=$listName address=$value comment=$comment }
+      :if ($dryRun) do={ :put ("vpn-rules-import: [DRY-RUN] /ip firewall address-list add list=" . $listName . " address=" . $value . " comment=" . $comment) } else={ /ip firewall address-list add list=$listName address=$value comment=$comment }
     }
   }
   :if ($typ = "domain") do={
-    :if ($dryRun) do={ :put ("vpn-rules-sync: [DRY-RUN] /ip firewall address-list add list=" . $listName . " address=" . $value . " comment=" . $comment) } else={ /ip firewall address-list add list=$listName address=$value comment=$comment }
+    :if ($dryRun) do={ :put ("vpn-rules-import: [DRY-RUN] /ip firewall address-list add list=" . $listName . " address=" . $value . " comment=" . $comment) } else={ /ip firewall address-list add list=$listName address=$value comment=$comment }
   }
   :if ($typ = "subdomain") do={
-    :if ($dryRun) do={ :put ("vpn-rules-sync: [DRY-RUN] /ip dns static add address-list=" . $listName . " forward-to=" . $forwardTo . " match-subdomain=yes name=" . $value . " type=FWD comment=" . $comment) } else={ /ip dns static add address-list=$listName forward-to=$forwardTo match-subdomain=yes name=$value type=FWD comment=$comment }
+    :if ($dryRun) do={
+      :put ("vpn-rules-import: [DRY-RUN] /ip firewall address-list add list=" . $listName . " address=" . $value . " comment=" . $comment)
+      :put ("vpn-rules-import: [DRY-RUN] /ip dns static add address-list=" . $listName . " forward-to=" . $forwardTo . " match-subdomain=yes name=" . $value . " type=FWD comment=" . $comment)
+    } else={
+      /ip firewall address-list add list=$listName address=$value comment=$comment
+      /ip dns static add address-list=$listName forward-to=$forwardTo match-subdomain=yes name=$value type=FWD comment=$comment
+    }
   }
   :if ($typ = "regex") do={
     :local re [$normalizeRegex re=$value]
@@ -442,16 +420,16 @@
     }
     :foreach one in=$variants do={
       :if ($dryRun) do={
-        :put ("vpn-rules-sync: [DRY-RUN] /ip dns static add address-list=" . $listName . " forward-to=" . $forwardTo . " regexp=" . $one . " type=FWD comment=" . $comment)
+        :put ("vpn-rules-import: [DRY-RUN] /ip dns static add address-list=" . $listName . " forward-to=" . $forwardTo . " regexp=" . $one . " type=FWD comment=" . $comment)
       } else={
         :local existing [/ip dns static find type=FWD regexp=$one]
         :if ([:len $existing] > 0) do={
-          :log info ("vpn-rules-sync: regex already exists, skip " . $one)
+          :log info ("vpn-rules-import: regex already exists, skip " . $one)
         } else={
           :do {
             /ip dns static add address-list=$listName forward-to=$forwardTo regexp=$one type=FWD comment=$comment
           } on-error={
-            :log warning ("vpn-rules-sync: regex add failed src=" . $value . " norm=" . $one)
+            :log warning ("vpn-rules-import: regex add failed src=" . $value . " norm=" . $one)
             :error ("regex add failed: " . $value)
           }
         }
@@ -467,9 +445,9 @@
   :local fid [/file find name=$stateDir]
   :if ([:len $fid] = 0) do={
     :if ($dryRun) do={
-      :put ("vpn-rules-sync: [DRY-RUN] would ensure state dir: " . $stateDir)
+      :put ("vpn-rules-import: [DRY-RUN] would ensure state dir: " . $stateDir)
     } else={
-      :do { /file make-directory $stateDir } on-error={ :log warning ("vpn-rules-sync: failed to create state dir " . $stateDir) }
+      :do { /file make-directory $stateDir } on-error={ :log warning ("vpn-rules-import: failed to create state dir " . $stateDir) }
     }
   }
 }
@@ -498,14 +476,14 @@
   :local stateFile [$getStateFileName key=$key]
   :local cmdStr ("/file set [find name=\"" . $stateFile . "\"] contents=\"" . $fp . "\"")
   :if ($dryRun) do={
-    :put ("vpn-rules-sync: [DRY-RUN] would store hash: " . $cmdStr)
+    :put ("vpn-rules-import: [DRY-RUN] would store hash: " . $cmdStr)
     :return ""
   }
   :local fid [/file find name=$stateFile]
   :if ([:len $fid] > 0) do={
-    :do { /file set [:pick $fid 0] contents=$fp } on-error={ :log warning ("vpn-rules-sync: setStoredFingerprint failed set " . $key) }
+    :do { /file set [:pick $fid 0] contents=$fp } on-error={ :log warning ("vpn-rules-import: setStoredFingerprint failed set " . $key) }
   } else={
-    :do { /file add name=$stateFile contents=$fp } on-error={ :log warning ("vpn-rules-sync: setStoredFingerprint failed add " . $key) }
+    :do { /file add name=$stateFile contents=$fp } on-error={ :log warning ("vpn-rules-import: setStoredFingerprint failed add " . $key) }
   }
   :return ""
 }
@@ -518,10 +496,10 @@
   :local fid [/file find name=$stateFile]
   :if ([:len $fid] = 0) do={ :return "" }
   :if ($dryRun) do={
-    :put ("vpn-rules-sync: [DRY-RUN] would remove state file " . $stateFile)
+    :put ("vpn-rules-import: [DRY-RUN] would remove state file " . $stateFile)
     :return ""
   }
-  :do { /file remove [:pick $fid 0] } on-error={ :log warning ("vpn-rules-sync: removeStoredFingerprint failed " . $key) }
+  :do { /file remove [:pick $fid 0] } on-error={ :log warning ("vpn-rules-import: removeStoredFingerprint failed " . $key) }
   :return ""
 }
 
@@ -547,24 +525,24 @@
     :if (([:find $fname $pref] = 0) && ([:len $fname] > ($prefLen + $suffLen)) && ([:pick $fname ([:len $fname] - $suffLen) [:len $fname]] = $suff)) do={
       :local key [:pick $fname $prefLen ([:len $fname] - $suffLen)]
       :if ([:find $active ("," . $key . ",")] < 0) do={
-        :put ("vpn-rules-sync: cleanup removed source key=" . $key)
+        :put ("vpn-rules-import: cleanup removed source key=" . $key)
         :if ($dryRun) do={
-          :put ("vpn-rules-sync: [DRY-RUN] would remove rules comment=" . $key)
+          :put ("vpn-rules-import: [DRY-RUN] would remove rules comment=" . $key)
           :foreach id in=[/ip firewall address-list find list=$listName comment=$key] do={
-            :put ("vpn-rules-sync: [DRY-RUN]   /ip firewall address-list remove " . $id)
+            :put ("vpn-rules-import: [DRY-RUN]   /ip firewall address-list remove " . $id)
           }
           :foreach id in=[/ipv6 firewall address-list find list=$listName comment=$key] do={
-            :put ("vpn-rules-sync: [DRY-RUN]   /ipv6 firewall address-list remove " . $id)
+            :put ("vpn-rules-import: [DRY-RUN]   /ipv6 firewall address-list remove " . $id)
           }
           :foreach id in=[/ip dns static find comment=$key] do={
-            :put ("vpn-rules-sync: [DRY-RUN]   /ip dns static remove " . $id)
+            :put ("vpn-rules-import: [DRY-RUN]   /ip dns static remove " . $id)
           }
-          :put ("vpn-rules-sync: [DRY-RUN]   /file remove " . $fid)
+          :put ("vpn-rules-import: [DRY-RUN]   /file remove " . $fid)
         } else={
           :do { :foreach id in=[/ip firewall address-list find list=$listName comment=$key] do={ /ip firewall address-list remove $id } } on-error={}
           :do { :foreach id in=[/ipv6 firewall address-list find list=$listName comment=$key] do={ /ipv6 firewall address-list remove $id } } on-error={}
           :do { :foreach id in=[/ip dns static find comment=$key] do={ /ip dns static remove $id } } on-error={}
-          :do { /file remove $fid } on-error={ :log warning ("vpn-rules-sync: failed remove orphan state file " . $fname) }
+          :do { /file remove $fid } on-error={ :log warning ("vpn-rules-import: failed remove orphan state file " . $fname) }
         }
       }
     }
@@ -578,10 +556,10 @@
     /ip firewall address-list remove [find list=$listName comment="metaRules-placeholder"]
   } on-error={}
 } else={
-  :put ("vpn-rules-sync: [DRY-RUN] would ensure list: " . $listName)
+  :put ("vpn-rules-import: [DRY-RUN] would ensure list: " . $listName)
 }
 $ensureStateDir
-$cleanupRemovedSources sources=$sources
+$cleanupRemovedSources sources=$vpnRulesSources
 
 # --- Обработка одного source + dispatcher форматов ---
 :global processSource do={
@@ -616,10 +594,10 @@ $cleanupRemovedSources sources=$sources
   }
 
   :local url [$resolveRawUrl url=$srcUrl]
-  :log info ("vpn-rules-sync: source " . $id . " fetch " . $url . " fmt=" . $fmt)
+  :log info ("vpn-rules-import: source " . $id . " fetch " . $url . " fmt=" . $fmt)
   :if ($fmt != "json") do={
     :put ("  skipped (unsupported fmt=" . $fmt . ")")
-    :log warning ("vpn-rules-sync: source " . $id . " unsupported fmt " . $fmt)
+    :log warning ("vpn-rules-import: source " . $id . " unsupported fmt " . $fmt)
     :return ""
   }
 
@@ -627,7 +605,7 @@ $cleanupRemovedSources sources=$sources
   :put ("  fetch: content len=" . [:len $content])
   :if ([:len $content] = 0) do={
     :put ("  fetch failed or empty")
-    :log warning ("vpn-rules-sync: fetch failed " . $id)
+    :log warning ("vpn-rules-import: fetch failed " . $id)
     :return ""
   }
 
@@ -638,7 +616,7 @@ $cleanupRemovedSources sources=$sources
 
   :if (($fp = $stored) && (!$forceApply)) do={
     :put ("  skip (unchanged)")
-    :log info ("vpn-rules-sync: skip (unchanged) " . $id)
+    :log info ("vpn-rules-import: skip (unchanged) " . $id)
     :return ""
   }
   :if (($fp = $stored) && ($forceApply)) do={
@@ -646,7 +624,7 @@ $cleanupRemovedSources sources=$sources
   }
 
   :put ("  apply (will parse and apply rules)")
-  :log info ("vpn-rules-sync: apply " . $id)
+  :log info ("vpn-rules-import: apply " . $id)
   :local data ""
   :local jsonStr [:tolf [:tostr $content]]
   :do {
@@ -666,7 +644,7 @@ $cleanupRemovedSources sources=$sources
       :set data [:deserialize from=json $fixedJson]
     } on-error={
       :put ("  DESERIALIZE FAILED")
-      :log error ("vpn-rules-sync: deserialize failed " . $id)
+      :log error ("vpn-rules-import: deserialize failed " . $id)
     }
   }
 
@@ -688,21 +666,21 @@ $cleanupRemovedSources sources=$sources
       :foreach v in=$values do={
         :if ([:len $v] > 0) do={
           :set ruleCount ($ruleCount + 1)
-          :do { $applyRule typ=$typ value=$v comment=$comment } on-error={ :log warning ("vpn-rules-sync: apply rule failed " . $typ . " " . $v) }
+          :do { $applyRule typ=$typ value=$v comment=$comment } on-error={ :log warning ("vpn-rules-import: apply rule failed " . $typ . " " . $v) }
         }
       }
     }
   }
   :put ("  total rules applied: " . $ruleCount)
-  :do { $setStoredFingerprint key=$comment fp=$fp } on-error={ :log warning ("vpn-rules-sync: setStoredFingerprint failed " . $id) }
+  :do { $setStoredFingerprint key=$comment fp=$fp } on-error={ :log warning ("vpn-rules-import: setStoredFingerprint failed " . $id) }
   :return ""
 }
 
-:log info ("vpn-rules-sync: script " . $ScriptVersion . " (run started)")
-:foreach src in=$sources do={
+:log info ("vpn-rules-import: script " . $ScriptVersion . " (run started)")
+:foreach src in=$vpnRulesSources do={
   $processSource src=$src
   :put ("")
 }
 
-:put ("vpn-rules-sync: done")
-:log info "vpn-rules-sync: done"
+:put ("vpn-rules-import: done")
+:log info "vpn-rules-import: done"
