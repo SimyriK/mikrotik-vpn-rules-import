@@ -21,6 +21,7 @@
 :global listName "to-vpn"
 :global forwardTo "8.8.8.8"
 :global stateDir "vpn-rules-state"
+:global vpnRulesSources
 # Конфиг: скрипт vpn-rules-config (содержимое vpn-rules-config.rsc)
 /system/script/run vpn-rules-config;
 
@@ -320,17 +321,22 @@
 # Загрузка URL в файл и чтение целиком по кускам (обход лимита 64KB у output=user).
 # Идея из eworm-de/routeros-scripts (FetchHuge). Возвращает содержимое или "" при ошибке.
 :global fetchToContent do={
-  :local tmpName "metaRulesTmp"
+  :local tmpName [:tostr $tmpName]
+  :if ([:len $tmpName] = 0) do={ :set tmpName "metaRulesTmp" }
+  :do {
+    :foreach oldId in=[/file find name=$tmpName] do={ /file remove $oldId }
+  } on-error={}
   :do {
     /tool fetch url=$url mode=https check-certificate=yes-without-crl dst-path=$tmpName as-value
   } on-error={
     :log warning "vpn-rules-import: fetch to file failed"
     :return ""
   }
-  :local fid [/file find name~$tmpName]
+  :local fid [/file find name=$tmpName]
   :if ([:len $fid] = 0) do={ :log warning "vpn-rules-import: temp file not found"; :return "" }
-  :local fpath [/file get [:pick $fid 0] name]
-  :local fileSize [/file get [:pick $fid 0] size]
+  :local oneFid [:pick $fid 0]
+  :local fpath [/file get $oneFid name]
+  :local fileSize [/file get $oneFid size]
   :local content ""
   :local off 0
   :local chunkLen 32768
@@ -342,7 +348,7 @@
     :set content ($content . $part)
     :set off ($off + $toRead)
   }
-  :foreach id in=[/file find name~$tmpName] do={ /file remove $id }
+  :do { /file remove $oneFid } on-error={}
   :return $content
 }
 
@@ -364,19 +370,13 @@
     }
   } else={
     :do {
-      :foreach id in=[/ip firewall address-list find list=$listName comment=$c] do={
-        /ip firewall address-list remove $id
-      }
+      /ip firewall address-list remove [/ip firewall address-list find list=$listName comment=$c]
     } on-error={}
     :do {
-      :foreach id in=[/ipv6 firewall address-list find list=$listName comment=$c] do={
-        /ipv6 firewall address-list remove $id
-      }
+      /ipv6 firewall address-list remove [/ipv6 firewall address-list find list=$listName comment=$c]
     } on-error={}
     :do {
-      :foreach id in=[/ip dns static find comment=$c] do={
-        /ip dns static remove $id
-      }
+      /ip dns static remove [/ip dns static find comment=$c]
     } on-error={}
   }
 }
@@ -539,9 +539,9 @@
           }
           :put ("vpn-rules-import: [DRY-RUN]   /file remove " . $fid)
         } else={
-          :do { :foreach id in=[/ip firewall address-list find list=$listName comment=$key] do={ /ip firewall address-list remove $id } } on-error={}
-          :do { :foreach id in=[/ipv6 firewall address-list find list=$listName comment=$key] do={ /ipv6 firewall address-list remove $id } } on-error={}
-          :do { :foreach id in=[/ip dns static find comment=$key] do={ /ip dns static remove $id } } on-error={}
+          :do { /ip firewall address-list remove [/ip firewall address-list find list=$listName comment=$key] } on-error={}
+          :do { /ipv6 firewall address-list remove [/ipv6 firewall address-list find list=$listName comment=$key] } on-error={}
+          :do { /ip dns static remove [/ip dns static find comment=$key] } on-error={}
           :do { /file remove $fid } on-error={ :log warning ("vpn-rules-import: failed remove orphan state file " . $fname) }
         }
       }
@@ -557,6 +557,11 @@
   } on-error={}
 } else={
   :put ("vpn-rules-import: [DRY-RUN] would ensure list: " . $listName)
+}
+:if ([:typeof $vpnRulesSources] != "array") do={
+  :log warning "vpn-rules-import: vpnRulesSources is empty or invalid (check vpn-rules-config)"
+  :put "vpn-rules-import: vpnRulesSources is empty or invalid (check vpn-rules-config)"
+  :set vpnRulesSources ({})
 }
 $ensureStateDir
 $cleanupRemovedSources sources=$vpnRulesSources
@@ -601,7 +606,7 @@ $cleanupRemovedSources sources=$vpnRulesSources
     :return ""
   }
 
-  :local content [$fetchToContent url=$url]
+  :local content [$fetchToContent url=$url tmpName=("metaRulesTmp-" . $id)]
   :put ("  fetch: content len=" . [:len $content])
   :if ([:len $content] = 0) do={
     :put ("  fetch failed or empty")
@@ -678,7 +683,12 @@ $cleanupRemovedSources sources=$vpnRulesSources
 
 :log info ("vpn-rules-import: script " . $ScriptVersion . " (run started)")
 :foreach src in=$vpnRulesSources do={
-  $processSource src=$src
+  :do {
+    $processSource src=$src
+  } on-error={
+    :log warning ("vpn-rules-import: source failed " . ($src->"id"))
+    :put ("vpn-rules-import: source failed " . ($src->"id"))
+  }
   :put ("")
 }
 

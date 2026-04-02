@@ -7,6 +7,8 @@
 :do { /system/script/run vpn-rules-config } on-error={
   :log warning "vpn-rules-selfupdate: vpn-rules-config failed (optional for URL read)"
 }
+
+:global vpnRulesConfigSourceUrl
 :local configUrl ""
 :do {
   :set configUrl [:tostr $vpnRulesConfigSourceUrl]
