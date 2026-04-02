@@ -22,6 +22,32 @@
 /system/script/run vpn-rules-installer
 ```
 
+### Быстрая конфигурация (автообновление)
+
+Если при установке вы выбрали автообновление (`vpn-rules-selfupdate` + `vpn-rules-cron`), настройте конфиг в `gist`:
+
+1. Откройте gist: https://gist.github.com/SimyriK/60d355e73bbd0b0dbf7d45ef24c1de11
+2. Сделайте fork и заполните под свои нужды
+3. Внутри самого gist задайте `listName` (имя `address-list` для VPN) и `vpnRulesConfigSourceUrl` на `raw`-URL вашего форка
+
+Важно: `vpnRulesConfigSourceUrl` указывайте в формате без `commit/hash`-сегмента после `raw`, то есть вида `.../raw/<file-name>`, а не `.../raw/<commit-sha>/<file-name>`.
+
+Далее на роутере откройте `System -> Scripts` и перейдите в скрипт `vpn-rules-config`. Минимум:
+
+```rsc
+# Полный HTTPS raw URL тела vpn-rules-config для selfupdate.
+# Пусто — не обновлять конфиг по URL.
+:global vpnRulesConfigSourceUrl "https://gist.githubusercontent.com/<username>/<id>/raw/<file-name>"
+```
+
+Для обновления и приминения правил - запустите обёртку вручную (она сначала selfupdate, потом применяет правила):
+
+```
+/system/script/run vpn-rules-cron
+```
+
+В дальнейшем обновление и приминение будет происходить по расписанию (по умолчанию каждый день в 04:00:00)
+
 ## Что умеет
 
 - Поддержка источников в формате JSON (`fmt=json`)
@@ -117,7 +143,7 @@
 
 `https://gist.githubusercontent.com/SimyriK/60d355e73bbd0b0dbf7d45ef24c1de11/raw/vpn-rules-config-public`
 
-Важно: для `vpnRulesConfigSourceUrl` используй ссылку без commit/hash-сегмента после `raw` (не `.../raw/<commit-sha>/<file>`), иначе URL будет привязан к конкретной версии файла и не обновится.
+Важно: для `vpnRulesConfigSourceUrl` используй ссылку без commit/hash-сегмента после `raw` (не `.../raw/<commit-sha>/<file-name>`), иначе URL будет привязан к конкретной версии файла и не обновится.
 
 Дополнительно: GitHub/Gist иногда отдаёт закэшированную версию. В `vpn-rules-selfupdate` для URL на `gist.githubusercontent.com` автоматически добавляется параметр `?ts=...` (cache-buster), чтобы забирать актуальный конфиг.
 
