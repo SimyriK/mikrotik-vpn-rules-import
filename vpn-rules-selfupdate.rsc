@@ -43,6 +43,16 @@
   :local scriptName [:pick $snames $idx]
   :local url [:pick $urls $idx]
   :set idx ($idx + 1)
+  :if (($scriptName = "vpn-rules-config") && ([:find $url "https://gist.githubusercontent.com/"] = 0)) do={
+    :local d [:tostr [/system clock get date]]
+    :local t [:tostr [/system clock get time]]
+    :local ts (($d . "-" . [:pick $t 0 2] . [:pick $t 3 5] . [:pick $t 6 8]) . "-" . $idx)
+    :if ([:find $url "?"] < 0) do={
+      :set url ($url . "?ts=" . $ts)
+    } else={
+      :set url ($url . "&ts=" . $ts)
+    }
+  }
   :local tmpName ("vpnRulesSu_" . $scriptName)
   :local content ""
   :local fetchOk false

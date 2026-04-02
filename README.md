@@ -109,7 +109,19 @@
 - **`vpnRulesGitBase`** — каталог raw ветки для **`vpn-rules-import.rsc`**, **`vpn-rules-cron.rsc`** и **`vpn-rules-selfupdate.rsc`** (например форк этого репозитория). **`vpn-rules-config.rsc` из основного репо не подтягивается** — на клиентах свой конфиг.
 - **`vpnRulesConfigSourceUrl`** — задаётся в **`vpn-rules-config`** (не в selfupdate: иначе при обновлении `vpn-rules-selfupdate.rsc` с GitHub сбросился бы URL). Если непусто, полный **HTTPS** raw одного файла с телом **`vpn-rules-config`**. Пустая строка — selfupdate конфиг по URL не качает.
 
-**Предпочтительный вариант для персонального конфига — [Gist](https://gist.github.com/)**: создай gist с одним файлом (например `vpn-rules-config.rsc`), открой **Raw** и скопируй URL вида `https://gist.githubusercontent.com/.../raw/.../vpn-rules-config.rsc`. Режим gist *Secret* — это **не шифрование**: ссылка не индексируется как публичная, но **любой, у кого есть URL, может скачать файл**; для RouterOS `tool fetch` без токена этого достаточно.
+**Предпочтительный вариант для персонального конфига — [Gist](https://gist.github.com/)**: создай gist, открой **Raw** и используй URL вида:
+
+`https://gist.githubusercontent.com/<user>/<gist-id>/raw/<file-name>`
+
+Пример:
+
+`https://gist.githubusercontent.com/SimyriK/60d355e73bbd0b0dbf7d45ef24c1de11/raw/vpn-rules-config-public`
+
+Важно: для `vpnRulesConfigSourceUrl` используй ссылку без commit/hash-сегмента после `raw` (не `.../raw/<commit-sha>/<file>`), иначе URL будет привязан к конкретной версии файла и не обновится.
+
+Дополнительно: GitHub/Gist иногда отдаёт закэшированную версию. В `vpn-rules-selfupdate` для URL на `gist.githubusercontent.com` автоматически добавляется параметр `?ts=...` (cache-buster), чтобы забирать актуальный конфиг.
+
+Режим gist *Secret* — это **не шифрование**: ссылка не индексируется как публичная, но **любой, у кого есть URL, может скачать файл**; для RouterOS `tool fetch` без токена этого достаточно.
 
 Порядок в selfupdate: сначала **`run vpn-rules-config`** (глобалы с устройства, в т.ч. URL), затем `vpn-rules-import` → опционально `vpn-rules-config` с URL → **`vpn-rules-cron`** → **`vpn-rules-selfupdate`**.
 
