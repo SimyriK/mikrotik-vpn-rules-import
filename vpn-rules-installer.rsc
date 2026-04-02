@@ -92,6 +92,7 @@
 
   :put ""
   :put "Fetching and writing scripts..."
+  :local anyFetchTlsRelaxed false
   :foreach j in=$jobs do={
     :local sname ($j->"script")
     :local fname ($j->"file")
@@ -101,13 +102,26 @@
       :local url ($base . $fname)
       :local tmpName ("vpnInst_" . $sname)
       :local content ""
+      :local fetchOk false
+      :local fetchUsedNoCertCheck false
+      :foreach id in=[/file find name~$tmpName] do={ /file remove $id }
       :do {
-        /tool fetch url=$url mode=https check-certificate=yes-without-crl dst-path=$tmpName as-value
+        /tool fetch url=$url mode=https check-certificate=yes-without-crl dst-path=$tmpName http-header-field="User-Agent: vpn-rules-installer/1" as-value
+        :set fetchOk true
       } on-error={
+        :foreach id in=[/file find name~$tmpName] do={ /file remove $id }
+        :do {
+          /tool fetch url=$url mode=https check-certificate=no dst-path=$tmpName http-header-field="User-Agent: vpn-rules-installer/1" as-value
+          :set fetchOk true
+          :set fetchUsedNoCertCheck true
+        } on-error={}
+      }
+      :if ($fetchOk = false) do={
         :put ("FETCH ERR: " . $url)
         [$vpnRulesInstallerCleanup]
         :error ("fetch failed: " . $fname)
       }
+      :if ($fetchUsedNoCertCheck = true) do={ :set anyFetchTlsRelaxed true }
       :local fid [/file find name~$tmpName]
       :if ([:len $fid] = 0) do={ [$vpnRulesInstallerCleanup]; :error ("temp file missing: " . $tmpName) }
       :local fpath [/file get [:pick $fid 0] name]
@@ -133,6 +147,9 @@
         :put ("SET " . $sname)
       }
     }
+  }
+  :if ($anyFetchTlsRelaxed = true) do={
+    :put "fetch: check-certificate=no used (strict HTTPS: update RouterOS or import CA)."
   }
 
   :if ($wantSch) do={

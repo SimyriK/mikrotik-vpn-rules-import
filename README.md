@@ -1,6 +1,6 @@
 # vpn-rules-import for MikroTik RouterOS v7
 
-Скрипт синхронизирует правила из JSON-источников (MetaCubeX `meta-rules-dat`) в MikroTik:
+Скрипт синхронизирует правила из JSON (в т.ч. MetaCubeX `meta-rules-dat`) и из **простого текста** (списки токенов в одном файле) в MikroTik:
 
 - `/ip firewall address-list` и `/ipv6 firewall address-list` (list `to-vpn`)
 - `/ip dns static` (`type=FWD`, `forward-to=8.8.8.8`)
@@ -50,8 +50,8 @@
 
 ## Что умеет
 
-- Поддержка источников в формате JSON (`fmt=json`)
-- Типы правил: `ip`, `domain`, `subdomain`, `regex`
+- Поддержка источников **`fmt=json`** (разбор JSON и `map` с путями) и **`fmt=text`** (plain-text: токены выделяются из текста, тип определяется эвристикой)
+- Типы правил: `ip`, `domain`, `subdomain`, `regex` (для `fmt=text` доступны только `ip`, `domain`, `subdomain`; см. ниже)
 - Преобразование GitHub `blob` URL в `raw.githubusercontent.com`
 - Хранение состояния (fingerprint) в файлах `vpn-rules-state/source-<tag>-<id>.sha512`
 - Пропуск неизменившихся источников
@@ -167,21 +167,56 @@
 - `forwardTo` — DNS forwarder для `FWD` записей
 - `stateDir` — директория для state-файлов
 - `dnsCacheMinSize` — минимальный `cache-size` DNS cache (если текущее больше, не уменьшается)
-- `vpnRulesConfigSourceUrl` — URL для raw фвйла с конфигом (см. «Самообновление с GitHub»)
+- `vpnRulesConfigSourceUrl` — URL для raw файла с конфигом (см. «Самообновление с GitHub»)
 
-### Блок `sources`
+### Блок `sources` (`vpnRulesSources`)
 
-Для каждого источника:
+Общие поля для любого источника:
 
 - `id` — уникальный идентификатор
+- `fmt` — формат: `"json"` или `"text"`
 - `tag` — префикс комментария, итог: `<tag>-<id>`
 - `enabled` — `"true"` / `"false"`
-- `src` — URL JSON
-- `map` — сопоставление `json-path|type` через запятую
+- `src` — URL тела источника (HTTPS; для GitHub `blob` преобразуется в `raw`)
 
-Пример `map`:
+**Только при `fmt=json`:**
 
-`rules.domain|domain,rules.domain_suffix|subdomain,rules.domain_regex|regex,rules.ip_cidr|ip`
+- `map` — список пар `json-path|type` через запятую, например  
+  `rules.domain|domain,rules.domain_suffix|subdomain,rules.domain_regex|regex,rules.ip_cidr|ip`
+
+**Только при `fmt=text`:**
+
+Файл — обычный текст: строки и токены извлекаются по допустимым символам (цифры, буквы, `.:/*-#` и т.д.); разделители — всё остальное.
+
+- `filter` — какие типы токенов **применять** как правила:  
+  - `"all"` — все поддерживаемые для текста типы (`ip`, `domain`, `subdomain`);  
+  - или один тип / список через запятую, например `"ip"` или `"ip,domain"`.  
+  Пусто или отсутствует поле — как `"all"`.  
+  Токены неподходящего типа или нераспознанные пропускаются.
+
+Эвристика типа токена в тексте:
+
+- строка с `#` в начале — комментарий, не правило;
+- есть `/` или `:` — **ip** (IPv4/IPv6 CIDR или фрагмент IPv6);
+- начинается с `*.` — **subdomain** (в правило попадает суффикс без `*.`);
+- иначе, если строка целиком из допустимых для домена символов — **domain**.
+
+В логе консоли для `fmt=text` по завершении показываются строки вида `typ=ip -> N values` (как смысловой аналог строк `path ... -> N values` у JSON), затем `total rules applied: ...`.
+
+Пример источника plain-text (официальный список сетей Telegram):
+
+```rsc
+{
+  "id"="tg-cidr";
+  "fmt"="text";
+  "tag"="tgCidr";
+  "enabled"="true";
+  "src"="https://core.telegram.org/resources/cidr.txt";
+  "filter"="ip"
+};
+```
+
+Fingerprint для пропуска неизменённых источников учитывает `fmt`, для JSON — ещё `map`, для текста — ещё `filter` (и общие `listName`, `forwardTo`).
 
 ## Поведение при изменениях
 

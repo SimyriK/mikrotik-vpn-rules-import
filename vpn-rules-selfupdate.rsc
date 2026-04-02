@@ -60,8 +60,15 @@
     /tool fetch url=$url mode=https check-certificate=yes-without-crl dst-path=$tmpName http-header-field="User-Agent: vpn-rules-selfupdate/1" as-value
     :set fetchOk true
   } on-error={
-    :log warning ("vpn-rules-selfupdate: fetch failed " . $scriptName . " url=" . $url)
-    :put ("vpn-rules-selfupdate: fetch failed " . $scriptName)
+    :foreach id in=[/file find name~$tmpName] do={ /file remove $id }
+    :do {
+      /tool fetch url=$url mode=https check-certificate=no dst-path=$tmpName http-header-field="User-Agent: vpn-rules-selfupdate/1" as-value
+      :set fetchOk true
+      :log warning ("vpn-rules-selfupdate: fetch ok with check-certificate=no " . $scriptName)
+    } on-error={
+      :log warning ("vpn-rules-selfupdate: fetch failed " . $scriptName . " url=" . $url)
+      :put ("vpn-rules-selfupdate: fetch failed " . $scriptName)
+    }
   }
   :if ($fetchOk = true) do={
     :local fid [/file find name~$tmpName]

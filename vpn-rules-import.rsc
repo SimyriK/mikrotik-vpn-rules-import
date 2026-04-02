@@ -327,10 +327,15 @@
     :foreach oldId in=[/file find name=$tmpName] do={ /file remove $oldId }
   } on-error={}
   :do {
-    /tool fetch url=$url mode=https check-certificate=yes-without-crl dst-path=$tmpName as-value
+    /tool fetch url=$url mode=https check-certificate=yes-without-crl dst-path=$tmpName http-header-field="User-Agent: vpn-rules-import-fetch/1" as-value
   } on-error={
-    :log warning "vpn-rules-import: fetch to file failed"
-    :return ""
+    :foreach id in=[/file find name=$tmpName] do={ /file remove $id }
+    :do {
+      /tool fetch url=$url mode=https check-certificate=no dst-path=$tmpName http-header-field="User-Agent: vpn-rules-import-fetch/1" as-value
+    } on-error={
+      :log warning "vpn-rules-import: fetch to file failed (strict and no-cert)"
+      :return ""
+    }
   }
   :local fid [/file find name=$tmpName]
   :if ([:len $fid] = 0) do={ :log warning "vpn-rules-import: temp file not found"; :return "" }
@@ -566,6 +571,58 @@
 $ensureStateDir
 $cleanupRemovedSources sources=$vpnRulesSources
 
+# Определение типа токена из plain-text строки (для fmt=text).
+# Возвращает: "ip" | "domain" | "subdomain" | "" (пропустить).
+# "#..."         → "" (комментарий)
+# содержит "/"   → "ip" (IPv4/IPv6 CIDR)
+# содержит ":"   → "ip" (IPv6 без маски)
+# начинается "*."→ "subdomain"
+# [a-z0-9A-Z.-]  → "domain"
+# иначе          → ""
+:global detectTokenType do={
+  :local t $token
+  :local tLen [:len $t]
+  :if ($tLen = 0) do={ :return "" }
+  :if ([:pick $t 0 1] = "#") do={ :return "" }
+  :if ([:find $t "/"] >= 0) do={ :return "ip" }
+  :if ([:find $t ":"] >= 0) do={ :return "ip" }
+  :if (($tLen > 2) && ([:pick $t 0 2] = "*.")) do={ :return "subdomain" }
+  :local allowed "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-"
+  :local i 0
+  :local isDomain true
+  :while ($i < $tLen) do={
+    :if ([:find $allowed [:pick $t $i ($i + 1)]] < 0) do={ :set isDomain false; :set i $tLen }
+    :set i ($i + 1)
+  }
+  :if ($isDomain) do={ :return "domain" }
+  :return ""
+}
+
+# Токенизация plain-text: символы вне набора — разделители.
+# Возвращает массив строк-токенов.
+:global tokenizeText do={
+  :local text $content
+  :local allowed "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.:/.-_*#"
+  :local tokens ({})
+  :local tok ""
+  :local i 0
+  :local n [:len $text]
+  :while ($i < $n) do={
+    :local ch [:pick $text $i ($i + 1)]
+    :if ([:find $allowed $ch] >= 0) do={
+      :set tok ($tok . $ch)
+    } else={
+      :if ([:len $tok] > 0) do={
+        :set tokens ($tokens, $tok)
+        :set tok ""
+      }
+    }
+    :set i ($i + 1)
+  }
+  :if ([:len $tok] > 0) do={ :set tokens ($tokens, $tok) }
+  :return $tokens
+}
+
 # --- Обработка одного source + dispatcher форматов ---
 :global processSource do={
   :global resolveRawUrl
@@ -581,6 +638,8 @@ $cleanupRemovedSources sources=$vpnRulesSources
   :global extractByPath
   :global applyRule
   :global setStoredFingerprint
+  :global detectTokenType
+  :global tokenizeText
 
   :local id ($src->"id")
   :local tag ($src->"tag")
@@ -598,13 +657,14 @@ $cleanupRemovedSources sources=$vpnRulesSources
     :return ""
   }
 
-  :local url [$resolveRawUrl url=$srcUrl]
-  :log info ("vpn-rules-import: source " . $id . " fetch " . $url . " fmt=" . $fmt)
-  :if ($fmt != "json") do={
+  :if (($fmt != "json") && ($fmt != "text")) do={
     :put ("  skipped (unsupported fmt=" . $fmt . ")")
     :log warning ("vpn-rules-import: source " . $id . " unsupported fmt " . $fmt)
     :return ""
   }
+
+  :local url [$resolveRawUrl url=$srcUrl]
+  :log info ("vpn-rules-import: source " . $id . " fetch " . $url . " fmt=" . $fmt)
 
   :local content [$fetchToContent url=$url tmpName=("metaRulesTmp-" . $id)]
   :put ("  fetch: content len=" . [:len $content])
@@ -615,7 +675,9 @@ $cleanupRemovedSources sources=$vpnRulesSources
   }
 
   :local fp [$contentHash content=$content]
-  :local cfgKey ("cfg|comment=" . $comment . "|map=" . $mapStr . "|list=" . $listName . "|fwd=" . $forwardTo . "|fmt=" . $fmt)
+  :local cfgKey ("cfg|comment=" . $comment . "|fmt=" . $fmt . "|list=" . $listName . "|fwd=" . $forwardTo)
+  :if ($fmt = "json") do={ :set cfgKey ($cfgKey . "|map=" . $mapStr) }
+  :if ($fmt = "text") do={ :set cfgKey ($cfgKey . "|filter=" . ($src->"filter")) }
   :set fp [$contentHash content=($fp . "|" . $cfgKey)]
   :local stored [$getStoredFingerprint key=$comment]
 
@@ -630,53 +692,104 @@ $cleanupRemovedSources sources=$vpnRulesSources
 
   :put ("  apply (will parse and apply rules)")
   :log info ("vpn-rules-import: apply " . $id)
-  :local data ""
-  :local jsonStr [:tolf [:tostr $content]]
-  :do {
-    :set data [:deserialize from=json $jsonStr]
-  } on-error={
-    :put ("  DESERIALIZE #1 FAILED, try version workaround")
-    :local fixedJson $jsonStr
-    :local vKeyPos [:find $fixedJson "\"version\""]
-    :if ($vKeyPos >= 0) do={
-      :local vColonPos [:find $fixedJson ":" $vKeyPos]
-      :local vCommaPos [:find $fixedJson "," $vColonPos]
-      :if (($vColonPos >= 0) && ($vCommaPos > $vColonPos)) do={
-        :set fixedJson ([:pick $fixedJson 0 ($vColonPos + 1)] . "\"2\"" . [:pick $fixedJson $vCommaPos [:len $fixedJson]])
+
+  # --- fmt=json ---
+  :if ($fmt = "json") do={
+    :local data ""
+    :local jsonStr [:tolf [:tostr $content]]
+    :do {
+      :set data [:deserialize from=json $jsonStr]
+    } on-error={
+      :put ("  DESERIALIZE #1 FAILED, try version workaround")
+      :local fixedJson $jsonStr
+      :local vKeyPos [:find $fixedJson "\"version\""]
+      :if ($vKeyPos >= 0) do={
+        :local vColonPos [:find $fixedJson ":" $vKeyPos]
+        :local vCommaPos [:find $fixedJson "," $vColonPos]
+        :if (($vColonPos >= 0) && ($vCommaPos > $vColonPos)) do={
+          :set fixedJson ([:pick $fixedJson 0 ($vColonPos + 1)] . "\"2\"" . [:pick $fixedJson $vCommaPos [:len $fixedJson]])
+        }
+      }
+      :do {
+        :set data [:deserialize from=json $fixedJson]
+      } on-error={
+        :put ("  DESERIALIZE FAILED")
+        :log error ("vpn-rules-import: deserialize failed " . $id)
       }
     }
-    :do {
-      :set data [:deserialize from=json $fixedJson]
-    } on-error={
-      :put ("  DESERIALIZE FAILED")
-      :log error ("vpn-rules-import: deserialize failed " . $id)
+    :if ([:typeof $data] != "array") do={
+      :put ("  data is NOT array, skip rules")
+      :return ""
     }
-  }
-
-  :if ([:typeof $data] != "array") do={
-    :put ("  data is NOT array, skip rules")
-    :return ""
-  }
-
-  $removeOldRules comment=$comment
-  :local pairs [$splitStr str=$mapStr delim=","]
-  :local ruleCount 0
-  :foreach pair in=$pairs do={
-    :local sep [:find $pair "|"]
-    :if ($sep >= 0) do={
-      :local path [:pick $pair 0 $sep]
-      :local typ [:pick $pair ($sep + 1) [:len $pair]]
-      :local values [$extractByPath root=$data path=$path]
-      :put ("  path " . $path . " -> " . [:len $values] . " values, typ=" . $typ)
-      :foreach v in=$values do={
-        :if ([:len $v] > 0) do={
-          :set ruleCount ($ruleCount + 1)
-          :do { $applyRule typ=$typ value=$v comment=$comment } on-error={ :log warning ("vpn-rules-import: apply rule failed " . $typ . " " . $v) }
+    $removeOldRules comment=$comment
+    :local pairs [$splitStr str=$mapStr delim=","]
+    :local ruleCount 0
+    :foreach pair in=$pairs do={
+      :local sep [:find $pair "|"]
+      :if ($sep >= 0) do={
+        :local path [:pick $pair 0 $sep]
+        :local typ [:pick $pair ($sep + 1) [:len $pair]]
+        :local values [$extractByPath root=$data path=$path]
+        :put ("  path " . $path . " -> " . [:len $values] . " values, typ=" . $typ)
+        :foreach v in=$values do={
+          :if ([:len $v] > 0) do={
+            :set ruleCount ($ruleCount + 1)
+            :do { $applyRule typ=$typ value=$v comment=$comment } on-error={ :log warning ("vpn-rules-import: apply rule failed " . $typ . " " . $v) }
+          }
         }
       }
     }
+    :put ("  total rules applied: " . $ruleCount)
   }
-  :put ("  total rules applied: " . $ruleCount)
+
+  # --- fmt=text ---
+  # plain-text: каждый токен на строке авто-детектируется по типу (ip/domain/subdomain).
+  # Поле filter: "all" | "<type>" | "<type>,<type>" — какие типы применять.
+  # Токены, не соответствующие фильтру или нераспознанные — пропускаются.
+  :if ($fmt = "text") do={
+    :local filterStr [:tostr ($src->"filter")]
+    :if ([:len $filterStr] = 0) do={ :set filterStr "all" }
+    :local filterAll ($filterStr = "all")
+    :local filterParts [$splitStr str=$filterStr delim=","]
+    :local tokens [$tokenizeText content=$content]
+    $removeOldRules comment=$comment
+    :local ruleCount 0
+    :local cntIp 0
+    :local cntDomain 0
+    :local cntSubdomain 0
+    :local skipCount 0
+    :foreach tok in=$tokens do={
+      :local typ [$detectTokenType token=$tok]
+      :if ([:len $typ] = 0) do={
+        :set skipCount ($skipCount + 1)
+      } else={
+        :local pass $filterAll
+        :if (!$filterAll) do={
+          :foreach f in=$filterParts do={
+            :if ($f = $typ) do={ :set pass true }
+          }
+        }
+        :if ($pass) do={
+          :local applyVal $tok
+          :if ($typ = "subdomain") do={ :set applyVal [:pick $tok 2 [:len $tok]] }
+          :set ruleCount ($ruleCount + 1)
+          :if ($typ = "ip") do={ :set cntIp ($cntIp + 1) }
+          :if ($typ = "domain") do={ :set cntDomain ($cntDomain + 1) }
+          :if ($typ = "subdomain") do={ :set cntSubdomain ($cntSubdomain + 1) }
+          :do { $applyRule typ=$typ value=$applyVal comment=$comment } on-error={
+            :log warning ("vpn-rules-import: apply rule failed " . $typ . " " . $tok)
+          }
+        } else={
+          :set skipCount ($skipCount + 1)
+        }
+      }
+    }
+    :if ($cntIp > 0) do={ :put ("  typ=ip -> " . $cntIp . " values") }
+    :if ($cntDomain > 0) do={ :put ("  typ=domain -> " . $cntDomain . " values") }
+    :if ($cntSubdomain > 0) do={ :put ("  typ=subdomain -> " . $cntSubdomain . " values") }
+    :put ("  total rules applied: " . $ruleCount)
+  }
+
   :do { $setStoredFingerprint key=$comment fp=$fp } on-error={ :log warning ("vpn-rules-import: setStoredFingerprint failed " . $id) }
   :return ""
 }
